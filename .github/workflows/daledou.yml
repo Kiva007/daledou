@@ -1,0 +1,100 @@
+name: DaLeDou Scheduled Tasks
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: '要执行的模块'
+        type: choice
+        options:
+          - noon
+          - evening
+        default: noon
+  schedule:
+    # 北京时间 13:01 -> UTC 05:01 执行 noon 模块
+    - cron: '1 5 * * *'
+    # 北京时间 20:01 -> UTC 12:01 执行 evening 模块
+    - cron: '1 12 * * *'
+
+jobs:
+  daledou:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Write cookie config
+        env:
+          DALEDOU_COOKIES: ${{ secrets.DALEDOU_COOKIES }}
+        run: |
+          if [ -z "$DALEDOU_COOKIES" ]; then
+            echo "缺少 DALEDOU_COOKIES secret" >&2
+            exit 1
+          fi
+          printf '%s\n' "$DALEDOU_COOKIES" > config/dld_cookie.yaml
+          echo "cookie 配置已写入 config/dld_cookie.yaml"
+
+      - name: Determine module
+        id: mod
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            module="${{ inputs.module }}"
+          elif [ "${{ github.event.schedule }}" = "1 12 * * *" ]; then
+            module="evening"
+          else
+            module="noon"
+          fi
+          echo "module=$module" >> "$GITHUB_OUTPUT"
+          echo "本次执行模块: $module"
+
+      - name: Run DaLeDou tasks
+        env:
+          MODULE: ${{ steps.mod.outputs.module }}
+        run: |
+          set -eo pipefail
+          echo "🚀 执行 $MODULE 模块任务..."
+          uv run main.py "$MODULE" 2>&1 | tee run_output.log
+
+      - name: Notify via PushPlus
+        if: always()
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          MODULE: ${{ steps.mod.outputs.module }}
+          STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$PUSHPLUS_TOKEN" ]; then
+            echo "未配置 PUSHPLUS_TOKEN，跳过微信推送"
+            exit 0
+          fi
+          if [ -f run_output.log ]; then
+            tail -n 30 run_output.log > run_tail.txt
+          else
+            echo "(无运行日志，任务可能未启动)" > run_tail.txt
+          fi
+          emoji="✅"
+          [ "$STATUS" != "success" ] && emoji="❌"
+          content="$(cat run_tail.txt)
+
+运行状态: $STATUS
+详情: $RUN_URL"
+          resp=$(curl -sS -m 30 -X POST "http://www.pushplus.plus/send/" \
+            --data-urlencode "token=$PUSHPLUS_TOKEN" \
+            --data-urlencode "title=大乐斗$MODULE任务 $emoji" \
+            --data-urlencode "template=txt" \
+            --data-urlencode "content=$content") || resp="curl 失败"
+          echo "📤 PushPlus 响应: $resp"
