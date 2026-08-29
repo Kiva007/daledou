@@ -90,8 +90,8 @@ jobs:
           [ "$STATUS" != "success" ] && emoji="❌"
           content="$(cat run_tail.txt)
 
-运行状态: $STATUS
-详情: $RUN_URL"
+          运行状态: $STATUS
+          详情: $RUN_URL"
           resp=$(curl -sS -m 30 -X POST "http://www.pushplus.plus/send/" \
             --data-urlencode "token=$PUSHPLUS_TOKEN" \
             --data-urlencode "title=大乐斗$MODULE任务 $emoji" \
